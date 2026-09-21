@@ -1,126 +1,31 @@
-# Sandbox 学习笔记
+# 订单 Agent 的本地权限边界
 
-当前订单 Agent 显式使用：
+[运行配置](../README.md#运行安全与联调配置) · [执行授权](EXECUTION_CONTRACT.md)
 
-```python
-Sandbox.read_only
-```
+当前 Runtime 仅接受 `READ_ONLY`；创建、恢复 Thread 和执行 Turn 均设置对应沙箱。业务写操作通过 MCP → ExecutionService → OMS 实现，不通过本地文件或 Shell 执行。
 
-目的不是让 Agent “能力变弱”，而是遵循最小权限原则：
+## 三种不同的边界
 
-```text
-Skill / 文档 / 源码
-→ 可以读取
+| 边界 | 本项目的作用 |
+|---|---|
+| 本地 Sandbox / 能力策略 | 限制本地文件写入与 Shell/JS/浏览器等能力 |
+| 持久化业务审批 | 判断规范业务动作是否批准，并签发固定执行 ID |
+| OMS 最终权限与事务 | 校验租户、资源、状态和幂等后执行真实操作 |
 
-本地 workspace 文件
-→ 不允许修改
+三者不能相互替代。只读沙箱不禁止 MCP 对外调用；允许调用 MCP 工具也不表示获得订单写权限。
 
-真实订单写操作
-→ 不靠本地文件写入
-→ 通过 MCP Tool
-→ 经过 Approval
-→ 进入 Java Business System
-→ 再做业务 Authorization
-```
+## 当前实现与限制
 
-## Sandbox 与 Approval 的区别
+- `app/runtime/policy.py` 限制本地工具，`launcher.py` 清理传入 Codex 的宿主环境。
+- 订单 Skill 由宿主读取并注入新 Thread，不依赖模型通过 Shell 读取文件。
+- 某些模型仍可暴露 apply_patch；READ_ONLY 和拒绝提权回调是写入边界的一部分。
+- Docker 内容目录为 `/agent`，CODEX_HOME 为专属持久目录；文件与网络的实际可达性需要部署层验收。
+- 这套模式不提供运行任意不可信代码的 OS 级隔离。需要 Shell 的业务应另设计运行身份、文件和网络隔离；直接切到 WORKSPACE_WRITE/FULL_ACCESS 会被当前 Runtime 拒绝。
 
-```text
-Approval
-= 这一次高风险操作是否批准
+## 正确的验收方式
 
-Sandbox
-= 即使批准了，Agent 在本地运行环境中最多允许碰到哪里
-```
+在专用测试环境验证：请求通过 Shell/脚本修改订单、本地写文件、读取非授权秘密、访问其他租户状态时不能成功；正常订单读取仍能通过 MCP 完成。使用实际文件/网络/OMS 审计结果判断，不能只看模型口头拒绝。
 
-两者应该同时存在。
+旧文档的“让 Agent 读取 README 第一行”不再作为本模式的成功用例：READ_ONLY 是权限上限，不保证已注册任意文件读取工具。需要测试一般文件 Agent 时，另建隔离场景。
 
-## 当前订单 Agent 的策略
-
-```text
-Skill:
-order-analysis
-
-MCP Tools:
-get_order_status
-cancel_order
-
-Approval:
-get_order_status -> 自动执行
-cancel_order -> 人工审批
-
-Sandbox:
-read_only
-
-Business Authorization:
-Java 业务系统继续检查 user / tenant / role / order state
-```
-
-## 为什么 Thread 和 Turn 都显式设置 read_only
-
-创建 Thread 时：
-
-```python
-ThreadStartParams(
-    sandbox=SandboxMode.read_only,
-)
-```
-
-执行普通 Turn 时：
-
-```python
-await thread.run(
-    message,
-    sandbox=Sandbox.read_only,
-)
-```
-
-执行流式 Turn 时：
-
-```python
-await thread.turn(
-    message,
-    sandbox=Sandbox.read_only,
-)
-```
-
-这样不会依赖 Codex 本机默认配置，也不会因为历史 Thread 的状态而意外扩大权限。
-
-## 最小实验
-
-先创建 Thread，然后执行两轮。
-
-### 实验 1：读取成功
-
-输入：
-
-```text
-请读取当前 workspace 中 README.md 的第一行，并告诉我内容。不要修改任何文件。
-```
-
-预期：Agent 可以读取文件并回答。
-
-### 实验 2：写入被拒绝
-
-输入：
-
-```text
-请在当前 workspace 创建 sandbox-test.txt，并写入 hello sandbox。
-```
-
-预期：Agent 不应该成功写入文件。你可以同时观察 SSE 中的 Item / Turn 事件和最终回答，理解 Sandbox 是运行时执行边界，而不是 Prompt 约束。
-
-## 三种官方 Sandbox 预设
-
-```text
-Sandbox.read_only
-→ 可以读，不能写
-
-Sandbox.workspace_write
-→ 可以读写 workspace 和配置的 writable roots
-
-Sandbox.full_access
-→ 对应 danger-full-access，取消 Codex 文件系统 Sandbox 限制
-```
-
-企业 Agent 默认应该选择满足业务需求的最低权限，而不是直接使用 full_access。
+详见[上线验收清单](PRODUCTION_READINESS.md)和[可靠性说明](RELIABILITY.md)。

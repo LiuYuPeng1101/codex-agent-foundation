@@ -1,259 +1,109 @@
-# Codex Single Agent Project
+# 企业业务 Agent 开发底座 · Codex Harness
 
-## 新增：运行安全与联调准备（2026-09-06）
+把 Agent 接入已有的 Java / ERP / OMS / CRM 系统，复用会话、执行授权、流式接口和评测基础设施，按业务开发 Skill、Tool、Policy 与验收题库。当前以**订单 / 售后 Agent**作为参考实现。
 
-| 能力 | 当前行为 |
+**当前状态：可进入隔离测试环境联调；尚未完成生产上线验收。** 它是可复用的工程基线，目前还不是发布好的通用 SDK，也不是多 Agent 管理平台。订单装配仍在代码中，换业务需要开发适配层，不能只改一个 `AGENT_ID`。
+
+## 从这里开始
+
+| 你要做什么 | 阅读入口 |
 |---|---|
-| Runtime 启动环境 | 经独立 launcher 的实际 exec 边界清理环境；业务 API、执行授权和数据库凭据不传给 Codex |
-| 订单 Agent 本地权限 | 固定 READ_ONLY，禁用 shell/unified_exec、JS、浏览器、插件和子 Agent 等旁路；现有订单 Skill 由宿主加载为开发指令 |
-| 数据库故障 | 明确连接、连接池、SQL、锁等待期限；数据库异常返回安全 503 |
-| 就绪检查 | 一个后台探测任务检查数据库，`/ready` 读取探测结果；失败或结果过期返回 503，恢复后重新就绪 |
-| 审批查询 | 游标分页、状态/会话筛选、租户隔离的单条查询；PENDING 筛选排除过期的新授权 |
-| fixture 评测 | 验证独立测试服务的 fixture、租户、目标环境后执行；缺失/异常依然跳过并阻止发布门禁 |
-| MCP 联调测试 | 经真正的 Streamable HTTP 初始化、通知和 tools/call，验证身份、审批门禁及固定执行 ID |
+| 第一次启动、查询测试订单 | [上手指南](codex-agent-python/docs/GETTING_STARTED.md)：准备环境 → 启动依赖 → 创建会话 → HTTP/SSE |
+| 接入已有公司项目、开发第二种业务 Agent | [系统接入与复用指南](codex-agent-python/docs/INTEGRATION.md)：身份、接口、审批、扩展位置 |
+| 理解意图识别、上下文、记忆及框架差异 | [Codex Harness 与 AgentScope 对比](codex-agent-python/docs/HARNESS_COMPARISON.md) |
+| 查看 Python 配置、API、排障 | [Agent Service README](codex-agent-python/README.md) |
+| 接入 Java 业务系统 | [Order MCP Adapter README](hanress-test/README.md) |
+| 验证 Agent 效果与安全 | [LangSmith Eval 指南](codex-agent-python/evals/README.md) |
+| 判断能否上线 | [验收清单](codex-agent-python/docs/PRODUCTION_READINESS.md) · [可靠性边界](codex-agent-python/docs/RELIABILITY.md) · [执行幂等契约](codex-agent-python/docs/EXECUTION_CONTRACT.md) |
 
-运行模式仍是一个进程、一个 Runtime、一个专属 CODEX_HOME。环境清理与工具限制不等于可供任意代码使用的 OS 隔离沙箱；需要本地代码执行的 Agent 必须另行隔离部署。真实模型效果与真实 OMS 事务幂等仍需验收。
+## 它在现有系统中的位置
 
-详细配置与验收步骤见 [Python README](codex-agent-python/README.md#运行安全与联调配置)。
-
-
-最新实现与验收边界：[可靠性与复用说明](codex-agent-python/docs/RELIABILITY.md)。当前支持单进程、单 Runtime；真实业务幂等和生产恢复仍需端到端验收。
-
-
-这个仓库只做 **一个基于 Codex Harness 的生产级业务 Agent**。当前示例是订单 / 售后 Agent。
-
-> 当前状态：**已经形成生产级架构基线，但尚未完成全部生产就绪验证。**
-
-详细生产审计见：`codex-agent-python/docs/PRODUCTION_READINESS.md`。
-
-## 三层边界
-
-```text
-内容层：我们重点开发
-Skill / Tool / MCP / Policy
-        ↓
-容器层：Codex Harness
-Agent Loop / Thread / Turn / Context / Compaction / Sandbox / Tool Dispatch
-        ↓
-最小治理层：单 Agent 必需
-Auth / Approval / Conversation / Event / OTel / Business Authorization
+```mermaid
+flowchart TD
+    UI["现有前端 / 客服入口"] --> BFF["现有业务后端：登录、身份、审批页面"]
+    BFF --> API["Python Agent Service：HTTP / SSE"]
+    API --> Runtime["Codex Harness：Thread / Turn / 工具循环"]
+    API --> PG["PostgreSQL：会话归属、审批、执行授权"]
+    Runtime --> MCP["Java MCP Adapter：业务工具"]
+    MCP -->|"内部执行授权"| API
+    MCP --> OMS["现有业务系统：最终权限、事务、幂等"]
+    Runtime --> Disk["专属 CODEX_HOME：Codex 会话状态"]
 ```
 
-不重新实现 Agent Loop、Context Manager、Runtime Platform，也不因为用户多就提前开发 Agent Control Plane。
+推荐以独立服务接入，已有 Java 系统通过 HTTP/SSE 调用 Agent，业务能力通过 MCP 暴露。已有系统仍拥有账号、订单、权限和事务；不需要把整个业务后端迁到 Python，也不需要在 Java 再启动一套 Codex。
 
-## 当前运行链路
+## 我们已经确定的架构原则
 
-```text
-Business System / 客服前端
-          ↓
-     Agent Service
-          ↓
-     Codex Harness
-          ↓
-Skill + MCP + Tool Policy
-          ↓
-   Order MCP Adapter
-          ↓
-          OMS
+1. **业务内容由团队开发**：Skill 定义 SOP 与澄清规则，Tool/MCP 提供真实能力，Policy 约束权限，Eval 判断业务效果。
+2. **推理循环交给 Harness**：Codex 管理模型与工具往返、Thread/Turn、上下文及压缩。本仓库的 `CodexRuntime` 是适配器。
+3. **执行安全由程序和业务系统保证**：模型选择工具不等于获得授权；人工批准也不替代 OMS 的租户、资源权限和状态校验。
+4. **状态各有归属**：Codex 保存会话状态；PostgreSQL 保存会话归属与审批；订单事实回源 OMS。长期用户记忆、RAG 是独立需求。
+5. **复用先于平台化**：先复用模块和工程规范；真正出现多个业务的重复需求后，再抽取版本化公共包。多 Runtime、Registry、Scheduler 尚未实现。
+
+## 已实现什么，能复用什么
+
+| 能力 | 已有实现 | 复用边界 |
+|---|---|---|
+| Runtime 适配 | `AgentRuntime` Protocol、Codex SDK 适配、事件映射 | 更换运行时需另写实现并验证语义；不是配置即切换 |
+| 会话归属 | `conversation_id` 映射 Thread，校验 user + tenant | 前端只保存业务会话 ID；运维快照接口另有权限 |
+| 并发与失败边界 | 同会话互斥、总并发限制、执行期限、排空 | 单进程有效；同会话冲突 409、容量满 503 |
+| HTTP/SSE | 安全事件、有界订阅、客户端断线后后台继续执行 | 无历史重放、断点续传或完成结果查询型任务系统 |
+| 高风险操作 | 操作注册、参数绑定、持久化审批、固定 execution ID | 业务校验器需单独开发；OMS 仍须原子去重 |
+| 运行限制 | READ_ONLY、本地工具限制、launcher 清理环境 | 当前仅适合通过 MCP 执行业务；不是任意代码执行的隔离环境 |
+| 数据库可靠性 | 连接/SQL/锁等待期限、后台 readiness、异常安全码 | 部署容量、备份、故障恢复仍需验收 |
+| 审批接入 | 分页、会话/状态筛选、跨租户隔离 | 需要现有系统提供审批 UI；未实现职责分离、多人会签 |
+| 评测与观测 | LangSmith Target/Evaluator/门禁、OTel Trace | 真实模型实验、告警与业务质量阈值需要落地 |
+
+新 Agent 通常需要更换：**Skill、Tool 合约、MCP Adapter、业务授权校验器、模型/运行策略及题库**。公共接口、可靠性控制、授权骨架与评测方式可以继续复用。具体文件见[接入指南](codex-agent-python/docs/INTEGRATION.md)。
+
+## 快速开始
+
+参考环境：Python 3.11+、JDK 21、Maven、PostgreSQL 16、可用的 Codex 模型认证。完整链路还需要测试 OMS；仓库提供只读测试 fixture，可先验证查订单和恶意工具返回场景。
+
+```bash
+git clone https://github.com/LiuYuPeng1101/codex-hanress-test.git
+cd codex-hanress-test/codex-agent-python
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev,eval]'
+ruff check app tests evals
+pytest
 ```
 
-`codex-agent-python/` 负责当前 Agent 的 Python Service、Codex Runtime Adapter、Conversation、Approval、Event/SSE、Auth、OTel 和 Evals；`hanress-test/` 当前只作为 Java Order MCP Adapter。
+这段只安装依赖并运行代码测试。未配置 `TEST_DATABASE_URL` 时，PostgreSQL 测试会跳过；**测试通过不表示服务已启动或真实模型已验收**。启动数据库、配置密钥、启动 Java/Python 和首次 API 调用请按[上手指南](codex-agent-python/docs/GETTING_STARTED.md)执行。
 
-详细架构问答见：`codex-agent-python/README.md`。
+## 意图、上下文、记忆，分别归谁管
 
-## 如果以后开发第二个 Agent，哪些可以复用？
+| 问题 | 本项目当前做法 |
+|---|---|
+| 用户想查订单还是取消订单？ | 模型结合用户输入、Skill、会话上下文及 Tool 描述选择动作；没有独立的意图分类服务 |
+| “把刚才那个订单取消”里的“那个”是谁？ | 同一 conversation 恢复同一 Thread，由模型使用上下文理解；不明确时应澄清 |
+| 聊天太长怎么办？ | 使用 Codex 的上下文压缩；已有手动压缩接口，真实效果仍需验证 |
+| 重启后还能接着聊吗？ | 恢复需要 PostgreSQL 映射与原 CODEX_HOME；机制已接入，灾难恢复尚未演练 |
+| 新会话是否自动记住这个客户？ | 未实现租户隔离的跨会话业务记忆，不能据此承诺 |
+| 订单是否已取消？ | 查询 OMS，以业务事务记录为准，不能把模型回答或审批 CONSUMED 当作成功凭证 |
 
-可以复用的工程壳：
+Codex 当前官方能力与仓库锁定版本并不完全等同；AgentScope Java 也有自己的 HarnessAgent、压缩和长期记忆机制。详细来源和区别见[机制对比](codex-agent-python/docs/HARNESS_COMPARISON.md)。
 
-```text
-FastAPI Service 结构
-CodexRuntime
-Conversation → Codex Thread 映射
-Service Auth
-Approval Framework
-Codex Event Mapper / SSE
-OpenTelemetry
-Docker / PostgreSQL 基础能力
-LangSmith Eval Target / Evaluator 模式
-```
+## 当前部署限制
 
-第二个 Agent 必须重新开发的主要是：
+- 一个 Agent Service 进程、一个事件循环、一个 Codex Runtime，`--workers 1`，部署副本为 1；可服务多个独立会话。
+- CODEX_HOME 使用专属持久目录，禁止两个 Runtime 同时写入；发布先停止旧实例，再启动新实例。
+- 公共 API 当前采用服务密钥 + 可信身份 Header；只供可信后端调用，不能把密钥交给浏览器或小程序。
+- 通用 SDK 适配、会话持久化不能自动保证跨租户文件、长期记忆或部署层隔离；必须按清单验收。
+- 暂无多 Runtime 路由、企业长期记忆服务、通用工作流引擎和开箱即用的前端审批台。
 
-```text
-Skill
-MCP / Tool
-Tool Contract
-Tool Policy
-Sandbox Policy
-业务授权契约
-Eval Dataset / 业务评分标准
-```
+## 接下来按什么顺序做
 
-例如合同 Agent 不应该复制第二套 Codex Runtime，而是复用工程壳，重新开发 `contract-review Skill + Contract MCP + Contract Policy + Contract Evals`。
+1. 跑通真实模型 → MCP → 测试 OMS 的查询和审批执行链。
+2. 验收 OMS 原子幂等、并发重放与提交后响应丢失。
+3. 运行完整 LangSmith 实验，关键用例不能失败或跳过。
+4. 验证身份、密钥、跨租户记忆/文件/网络边界。
+5. 演练重启恢复、备份恢复、发布排空、SSE 代理和容量告警。
 
-## 单 Agent 很多人使用时怎么扩容？
+不再把已完成的会话互斥、并发限制、Java CI 修复列为缺失项。每项状态、证据和上线门槛统一维护在[验收清单](codex-agent-python/docs/PRODUCTION_READINESS.md)。
 
-一个 Agent 可以有很多独立 Thread：
+## 最近更新
 
-```text
-用户 A → conversation A → thread A
-用户 B → conversation B → thread B
-用户 C → conversation C → thread C
-```
-
-当前 V1 只有一个 Runtime：
-
-```text
-用户
- ↓
-Agent API
- ↓
-PostgreSQL
-conversation → thread_id
- ↓
-唯一 Codex Runtime
-```
-
-此时不需要 `runtime_slot`。先通过并发限制保证一个 Runtime 不被无限请求拖垮。
-
-只有单 Runtime 真到容量瓶颈时才进入 V2：
-
-```text
-Agent API
- ↓
-PostgreSQL
-conversation → thread_id + runtime_slot
- ↓
-Runtime-0 / Runtime-1 / Runtime-2
- ↓
-每个 Runtime 独立 CODEX_HOME 持久盘
-```
-
-`runtime_slot=2` 就表示这个 Conversation 以后送到 Runtime-2。
-
-同时需要保证：
-
-```text
-同一 Conversation → 同时只执行一个 Turn
-不同 Conversation → 可以并行
-```
-
-多实例后可以用 Redis Lock 或 PostgreSQL advisory lock 做这件事。
-
-用户多是扩容问题；真正出现多个 Agent / 多团队 / 统一 MCP 治理时，才重新评估 Gateway / Registry / Control Plane。
-
-## 为什么现在没有 Vector DB / Graph DB？
-
-因为当前订单 Agent 的实时事实来自 OMS：
-
-```text
-“订单 1001 到哪了？”
-→ get_order_status
-→ OMS
-```
-
-不应该用向量数据库搜索实时订单状态。
-
-以后如果 Agent 需要从几千份售后政策、说明书、FAQ 中按语义找知识，再增加：
-
-```text
-Knowledge MCP
-→ RAG
-→ Vector DB（例如 Milvus）
-```
-
-如果业务重点变成实体关系查询，例如用户—设备—银行卡—商户或订单—批次—供应商—质检事件，再考虑 Graph DB。
-
-Codex Harness 不替代这些数据库；它只负责 Agent 怎么运行。数据库按业务需要通过 Tool / MCP 暴露给 Agent。
-
-## Evals：正式接入 LangSmith
-
-`cases.jsonl + run.py` 不再承担完整 Eval Platform 职责。现在正式结构是：
-
-```text
-人工 Golden / Seed
-生产失败 Case
-人工标注 Case
-合成变体
-        ↓
-LangSmith Dataset（版本化题库）
-        ↓
-LangSmithAgentTarget
-        ↓
-真实 Codex Agent HTTP/SSE
-        ↓
-Tool / Approval / Answer
-        ↓
-Evaluators
-        ↓
-Experiment
-```
-
-当前 Evaluator 包括：
-
-```text
-tool_policy
-→ Tool 是否选对
-
-approval_policy
-→ 风险动作是否正确触发 Approval
-
-response_contract
-→ 最低业务回答契约 / 敏感信息泄露
-
-business_quality（可选 LLM Judge）
-→ 事实性、边界、回答质量
-```
-
-详细使用说明见：`codex-agent-python/evals/README.md`。
-
-核心原则：
-
-> 能确定性判断的安全规则，不交给 LLM Judge；主观质量才使用 LLM-as-a-Judge。
-
-LangSmith 负责 Dataset、版本、Experiment 和结果比较；Agent 仍然是 Codex Harness，不需要改成 LangChain Agent。
-
-## 当前还不是完全生产就绪的地方
-
-专家审计后的 P0 缺口是：
-
-```text
-1. 同 Conversation 串行锁
-2. 全局 Agent Turn 并发限制 / 背压
-3. cancel_order 等写 Tool 的端到端幂等
-4. 每个 Tool 的 timeout / retry / degradation policy
-5. 从 shared secret + trusted headers 升级到正式身份边界
-6. Secret Manager / 密钥轮换
-7. CODEX_HOME 持久卷 + crash recovery 实际演练
-8. Java MCP Adapter CI 清零
-```
-
-P1 包括：
-
-```text
-LangSmith Eval 发布门禁
-SLO / Alert / 成本指标
-Graceful shutdown / draining
-PostgreSQL backup / restore
-SSE 断线与反向代理验证
-PII / Trace 脱敏策略
-```
-
-多 Runtime + `runtime_slot` 属于容量真的达到瓶颈后的 P2，不提前实现。
-
-完整原因、风险和处理方案见：`codex-agent-python/docs/PRODUCTION_READINESS.md`。
-
-## 当前明确不做
-
-```text
-Agent Registry
-多 Agent Control Plane
-Runtime Scheduler
-Agent Marketplace
-统一 Agent Gateway
-自研 Agent Loop
-自研 Context Manager
-自研 Observability Platform
-```
-
-我们的目标不是把一个 Agent 做成平台，而是把这个 Agent 的 Skill、Tool、Policy、Evals 和生产安全闭环真正做到可靠。
+- **2026-09-21，文档整理**：明确公司复用定位；新增上手、系统接入和 Harness 对比指南；重写验收清单，纠正旧状态。未升级依赖或声称完成新的生产验收。
+- **2026-09-06，PR #20 已合并**：执行授权和固定幂等 ID、运行环境清理、数据库超时与 readiness、审批分页、fixture 验证及完整 MCP HTTP 测试。该提交 CI：Python 88 项、Java 10 项通过，见[历史验证记录](https://github.com/LiuYuPeng1101/codex-hanress-test/actions/runs/34025590904)。

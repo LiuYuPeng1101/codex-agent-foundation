@@ -1,5 +1,9 @@
 # Order MCP Adapter
 
+[项目总览](../README.md) · [完整启动步骤](../codex-agent-python/docs/GETTING_STARTED.md) · [接入现有系统](../codex-agent-python/docs/INTEGRATION.md) · [验收清单](../codex-agent-python/docs/PRODUCTION_READINESS.md)
+
+参考工具链：JDK 21、Spring Boot 4.1.1、Spring AI 2.0.1（以 pom.xml 为准）。可独立部署，通过 Gateway 调用原业务系统，不要求旧项目迁移到同一 Spring Boot 版本。
+
 这个模块是企业订单系统的 **Spring Boot MCP Adapter**。它不是 Agent Runtime，也不拥有订单事实。
 
 生产职责：
