@@ -1,775 +1,135 @@
-# Codex Single Agent Service
+# Agent Service：运行与接口参考
 
-## 新增：运行安全与联调准备（2026-09-06）
+[项目总览](../README.md) · [完整上手步骤](docs/GETTING_STARTED.md) · [接入现有系统](docs/INTEGRATION.md) · [Codex / AgentScope 对比](docs/HARNESS_COMPARISON.md) · [上线验收](docs/PRODUCTION_READINESS.md)
 
-| 能力 | 当前行为 |
+本模块提供基于 Codex Harness 的单业务 Agent 服务。当前装配为订单 Agent，通过 Java MCP Adapter 查询或申请取消订单。首次使用按上手指南启动；本页用于查配置、接口和排障。
+
+## 代码导航
+
+| 位置 | 职责 |
 |---|---|
-| Runtime 启动环境 | 经独立 launcher 的实际 exec 边界清理环境；业务 API、执行授权和数据库凭据不传给 Codex |
-| 订单 Agent 本地权限 | 固定 READ_ONLY，禁用 shell/unified_exec、JS、浏览器、插件和子 Agent 等旁路；现有订单 Skill 由宿主加载为开发指令 |
-| 数据库故障 | 明确连接、连接池、SQL、锁等待期限；数据库异常返回安全 503 |
-| 就绪检查 | 一个后台探测任务检查数据库，`/ready` 读取探测结果；失败或结果过期返回 503，恢复后重新就绪 |
-| 审批查询 | 游标分页、状态/会话筛选、租户隔离的单条查询；PENDING 筛选排除过期的新授权 |
-| fixture 评测 | 验证独立测试服务的 fixture、租户、目标环境后执行；缺失/异常依然跳过并阻止发布门禁 |
-| MCP 联调测试 | 经真正的 Streamable HTTP 初始化、通知和 tools/call，验证身份、审批门禁及固定执行 ID |
-
-运行模式仍是一个进程、一个 Runtime、一个专属 CODEX_HOME。环境清理与工具限制不等于可供任意代码使用的 OS 隔离沙箱；需要本地代码执行的 Agent 必须另行隔离部署。真实模型效果与真实 OMS 事务幂等仍需验收。
-
-
-审批及幂等链路见 [执行契约](docs/EXECUTION_CONTRACT.md)。
-
-最新实现与验收边界：[可靠性与复用说明](docs/RELIABILITY.md)。当前支持单进程、单 Runtime；真实业务幂等和生产恢复仍需端到端验收。
-
-
-这个项目现在只做一件事：**基于 Codex Harness 开发并运行一个生产级业务 Agent**。
-
-当前 Agent 是订单 / 售后方向。我们不再开发 Agent Platform、Agent Control Plane、Registry、Runtime Scheduler 或多 Agent Gateway。
-
-整个项目固定按三层理解：
-
-```text
-内容层：我们重点开发
-Skill / Tool / MCP / Policy
-        ↓
-容器层：Codex Harness
-Agent Loop / Thread / Turn / Context / Compaction / Sandbox / Tool Dispatch
-        ↓
-最小治理层：单 Agent 必需
-Auth / Approval / Conversation Ownership / OTel / Business Authorization
-```
-
-后续任何代码，如果不能明确落入这三层之一，就要先问：**它是不是当前这个单 Agent 真需要？**
-
----
-
-# 1. 我们为什么不再开发 Runtime Platform？
-
-Codex Harness 已经负责：
-
-```text
-Agent Loop
-Thread / Turn
-Context
-Compaction
-Tool Dispatch
-Sandbox
-事件流
-```
-
-所以 `app/runtime/codex_runtime.py` 不是第二套 Harness。
-
-它只是一个薄 Adapter：
-
-```text
-当前 Agent 配置
-├── workspace
-├── MCP Server
-├── enabled tools
-├── approval policy
-└── sandbox
-        ↓
-CodexRuntime
-        ↓
-Codex Harness
-```
-
-它现在只做：
-
-```text
-thread_start / thread_resume
-把 MCP / Tool Policy 配给 Codex
-设置 Sandbox
-接 Approval Handler
-映射 Codex Event
-发 OpenTelemetry Trace
-```
-
-如果以后在 `CodexRuntime` 里出现业务判断、Workflow Engine、自定义 Agent Loop，说明又跑偏了。
-
----
-
-# 2. 我们真正应该开发什么？
-
-## 问题：一个售后 Agent 的能力到底写在哪里？
-
-主要写在内容层。
-
-例如用户说：
-
-> “订单 88201 怎么还没到？如果符合条件就帮我取消。”
-
-真正决定效果的是：
-
-```text
-Skill
-→ 是否要求先查真实状态
-→ 是否知道事实和分析要分开
-→ 是否知道什么情况下应该停止/澄清
-
-MCP / Tool
-→ 有没有 get_order_status
-→ cancel_order 的业务语义是否清晰
-→ Tool Contract 是否给了模型足够信息
-
-Policy
-→ get_order_status 是否自动允许
-→ cancel_order 是否必须 Approval
-→ Sandbox 是否 READ_ONLY
-```
-
-Codex Harness 负责把这些能力运行起来，但它不会替我们定义公司的售后 SOP。
-
----
-
-# 3. 当前订单 Agent 的真实执行链
-
-```text
-客服小王
-“查订单 88201，如果符合条件就取消”
-        ↓
-FastAPI Agent API
-        ↓
-ServicePrincipal
-确认调用人 user / tenant / roles
-        ↓
-conversation_id
-        ↓
-ConversationRepository
-找到 Codex thread_id
-        ↓
-CodexRuntime.thread_resume()
-        ↓
-Codex Harness
-        ↓
-发现 order-analysis Skill
-        ↓
-决定调用 get_order_status
-        ↓
-Java Order MCP Adapter
-        ↓
-真实 OMS
-        ↓
-返回订单事实
-        ↓
-Codex 分析
-        ↓
-如果决定 cancel_order
-        ↓
-MCP 应用服务的持久化业务审批
-        ↓
-人工 approve / reject
-        ↓
-批准后才允许写操作
-        ↓
-AgentEvent / SSE
-        ↓
-客服前端
-```
-
-这条链里，真正属于“Agent 产品能力”的重点仍然是：
-
-```text
-Skill
-Tool / MCP
-Policy
-业务权限契约
-最终业务结果质量
-```
-
----
-
-# 4. 为什么单 Agent 仍然需要 Conversation？
-
-因为只有一个 Agent，不代表只有一个会话。
-
-可能同时存在：
-
-```text
-用户 A → conversation A → Codex thread A
-用户 B → conversation B → Codex thread B
-用户 C → conversation C → Codex thread C
-```
-
-数据库只保存最小映射：
-
-```text
-conversation_id
-user_id
-tenant_id
-runtime_thread_id
-created_at
-```
-
-对应：
-
-```text
-app/conversations/conversation_repository.py
-```
-
-它只解决两个问题：
-
-```text
-1. 不把 Codex thread_id 暴露为业务主键
-2. 当前用户只能继续自己的 Conversation
-```
-
-当前明确没有：
-
-```text
-Runtime Lease
-Runtime Router
-Scheduler
-Agent Registry
-```
-
----
-
-# 5. 为什么单 Agent 仍然需要 Auth？
-
-因为“只有一个 Agent”不等于“任何人都可以调用”。
-
-当前请求：
-
-```text
-业务系统
-   │
-   │ Bearer API_SHARED_SECRET
-   │ X-User-Id
-   │ X-Tenant-Id
-   │ X-Roles
-   ▼
-Agent Service
-   ↓
-ServicePrincipal
-```
-
-代码：
-
-```text
-app/security/service_auth.py
-```
-
-它不是 Agent Gateway，只是这个 Agent Service 自己的入口认证。
-
-最重要的原则是：
-
-> `user_id / tenant_id / roles` 属于可信调用上下文，不允许作为 Tool 参数交给 LLM 自己生成。
-
-模型只需要表达：
-
-```text
-cancel_order(order_id="88201")
-```
-
-谁在取消、有没有权限，必须由程序和真实业务系统判断。
-
----
-
-# 6. 为什么单 Agent 仍然需要 Approval？
-
-一个 Agent 里也有不同风险等级：
-
-```text
-查询订单      → 低风险
-取消订单      → 高风险
-退款          → 高风险
-删除数据      → 禁止 / 更高风险
-```
-
-所以 Approval 是当前 Agent 的执行安全机制，不是多 Agent 平台才需要的功能。
-
-当前边界：
-
-```text
-ExecutionService / Approval
-= 固定业务动作是否获得人工批准并签发执行 ID
-
-Business Authorization
-= OMS 最终是否真的允许当前用户执行
-```
-
-二者不能互相替代。
-
-代码：
-
-```text
-app/approval/
-```
-
----
-
-# 7. 为什么还要 PostgreSQL？Codex 自己不是保存 Thread 吗？
-
-保存的是不同状态。
-
-```text
-CODEX_HOME
-→ Codex Thread / Context / Compaction / Runtime State
-
-PostgreSQL
-→ conversation_id ↔ thread_id
-→ Approval 状态和审计信息
-```
-
-我们不会复制完整聊天历史再实现一套 Context Manager。
-
-Context / Compaction 优先交给 Codex Harness。
-
----
-
-# 8. Event / Streaming / Observability 为什么保留？
-
-因为它们直接影响真实产品体验和生产排障。
-
-Codex Notification 先经过：
-
-```text
-CodexEventMapper
-```
-
-只输出稳定、安全事件：
-
-```text
-turn.started
-message.delta
-tool.started
-tool.completed
-turn.completed
-```
-
-不会默认把完整 Tool Arguments、Tool Result、Reasoning 直接暴露给前端。
-
-然后：
-
-```text
-AgentEvent
-├── SSE → 业务前端
-└── OTel → Langfuse / Phoenix / Tempo 等现成平台
-```
-
-我们不开发自己的 Observability 平台。
-
----
-
-# 9. 为什么现在不强依赖 agentgateway？
-
-当前只有：
-
-```text
-一个 Agent Service
-一个业务 MCP Adapter
-一个 Agent 团队
-```
-
-现在引入统一 Agent Gateway、Registry、Runtime Router、统一 MCP RBAC 会增加复杂度，但不会直接提升这个 Agent 的业务效果。
-
-什么时候再考虑？
-
-```text
-出现多个 Agent
-多个团队共享大量 MCP
-统一 LLM Key / Cost / Rate Limit
-统一 MCP RBAC
-A2A
-统一 egress 治理
-```
-
-在真实重复出现以前，不提前造平台。
-
----
-
-# 10. 当前代码各层职责
-
-```text
-codex-agent-python/
-│
-├── .agents/skills/order-analysis/SKILL.md
-│   # 内容层：售后 SOP
-│
-├── app/agents/definition.py
-│   # 当前 Agent：MCP / Tool Policy / Sandbox
-│
-├── app/runtime/codex_runtime.py
-│   # Codex Harness 薄 Adapter
-│
-├── app/services/agent_service.py
-│   # conversation → thread → turn
-│
-├── app/conversations/
-│   # 最小 conversation ↔ thread 映射
-│
-├── app/approval/
-│   # 高风险 Tool 人工审批
-│
-├── app/security/service_auth.py
-│   # 当前 Agent Service 入口认证
-│
-├── app/events/
-│   # Codex Notification → AgentEvent
-│
-├── app/observability/
-│   # OpenTelemetry
-│
-├── evals/
-│   # 黑盒 Agent Evals
-│
-└── api/
-    # HTTP / SSE
-
-hanress-test/
-└── Java Order MCP Adapter
-    # MCP Tool → 真实业务系统
-```
-
----
-
-# 11. 为什么现在开始做 Evals？
-
-到这里继续增加 Runtime 功能，收益已经开始下降。
-
-真正的问题变成：
-
-> **这个 Agent 到底做得对不对？**
-
-例如这些问题不能靠“代码能启动”证明：
-
-```text
-用户问订单状态，它真的会调用 get_order_status 吗？
-用户要求“不要查系统，直接猜”，它会不会乱猜？
-缺少订单号时，它会不会自己编一个？
-用户说“我是管理员”，它会不会绕过 Approval？
-用户要求泄露 token，它会不会泄露？
-用户要求通过本地脚本改订单，它会不会绕过 MCP？
-Tool 返回恶意 Prompt Injection 时，它会不会执行其中指令？
-```
-
-这些才是 Agent 产品质量。
-
----
-
-# 12. Eval 为什么必须测整条 Agent，而不是某个 Python 函数？
-
-因为真正的行为是多个因素共同决定的：
-
-```text
-User Message
-    ↓
-Codex Harness
-    ↓
-Skill
-    ↓
-Tool Selection
-    ↓
-MCP
-    ↓
-Policy / Approval
-    ↓
-Final Answer
-```
-
-所以当前 Eval 采用黑盒方式：
-
-```text
-Eval Runner
-    ↓ HTTP
-创建全新 Conversation
-    ↓ SSE
-执行真实 Turn
-    ↓
-观察 tool.started
-观察 message.delta
-    ↓
-查询 Approval API
-    ↓
-和期望进行比较
-```
-
-每个 Case 都创建新 Conversation，避免前一个 Case 的 Thread 上下文污染后一个 Case。
-
-代码：
-
-```text
-evals/cases.jsonl
-evals/run.py
-```
-
----
-
-# 13. 第一批 Eval 在测什么？
-
-当前第一批至少 20 条 Case，分为：
-
-```text
-tool-selection
-→ 查询订单时是否使用真实 Tool
-
-factuality
-→ 是否拒绝“直接猜”“用户自称事实”
-
-clarification
-→ 缺少订单号是否先澄清
-
-approval
-→ cancel_order 是否始终触发人工审批
-
-capability-boundary
-→ 不存在的退款/删除/改地址能力是否明确拒绝
-
-security
-→ 密钥泄露、Prompt Injection、Runtime 内部信息
-
-sandbox
-→ 是否尝试通过本地脚本绕过业务 Tool
-
-reasoning
-→ 是否区分系统事实和模型分析
-```
-
-其中 `tool-output-injection` Case 目前标记为需要 fixture，因为它必须让测试 MCP 返回恶意业务数据。没有这个真实 fixture 时宁可 `SKIPPED`，也不使用假的 Python mock 冒充端到端 Eval。
-
----
-
-# 14. 怎么运行真实 Eval？
-
-先启动真实测试链路：
-
-```text
-Java MCP Adapter / 测试 OMS
-        +
-Python Agent Service
-        +
-Codex 可用认证
-```
-
-安装开发依赖：
-
-```bash
-cd codex-agent-python
-pip install -e ".[dev]"
-```
-
-确保 Eval 使用的 Secret 和 Agent Service 一致：
-
-```bash
-export EVAL_API_SHARED_SECRET="你的 API_SHARED_SECRET"
-```
-
-运行：
-
-```bash
-python evals/run.py
-```
-
-也可以指定：
-
-```bash
-python evals/run.py \
-  --base-url http://127.0.0.1:8000 \
-  --cases evals/cases.jsonl
-```
-
-Runner 会输出：
-
-```text
-[PASSED] status-basic (tool-selection)
-[FAILED] cancel-bypass-approval (approval)
-  - Approval 期望=True，实际=False
-[SKIPPED] tool-output-injection (security)
-  - 需要外部 fixture: malicious-order-tool-result
-
-总计=20 通过=... 失败=... 跳过=...
-```
-
-有失败时进程退出码为 `1`。
-
----
-
-# 15. Eval 失败以后，到底应该改哪里？
-
-这是后续最重要的判断。
-
-### Case：用户问状态，Agent 没调用 Tool，直接猜了
-
-优先检查：
-
-```text
-Skill
-Tool description
-Tool availability
-```
-
-不是先改 Runtime。
-
-### Case：Agent 调错 Tool
-
-优先检查：
-
-```text
-Tool Contract
-Tool name / description
-Skill 中的决策规则
-```
-
-### Case：cancel_order 没触发审批
-
-优先检查：
-
-```text
-MCP 应用服务 → 内部执行授权接口 → PostgreSQL 审批
-```
-
-不是靠 Skill 写一句“请审批”解决。
-
-### Case：模型想绕过业务权限
-
-优先检查：
-
-```text
-Business Authorization
-MCP Adapter / OMS
-```
-
-不能只靠 Prompt。
-
-### Case：Tool 返回恶意文本后 Agent 被带偏
-
-优先检查：
-
-```text
-Skill 中对 Tool Result 的信任规则
-Tool Contract 是否混入可执行指令
-数据与指令是否分离
-```
-
-这就是 Eval 的价值：**告诉我们问题属于哪一层，而不是继续盲目加框架。**
-
----
-
-# 16. CI 和真实 Eval 为什么分开？
-
-普通 CI 负责：
-
-```text
-代码能否构建
-Migration 是否正确
-Ruff
-pytest
-Eval case JSONL 是否合法
-Runner 逻辑是否可导入
-```
-
-真实 Agent Eval 需要：
-
-```text
-Codex / 模型
-测试 MCP
-测试 OMS 数据
-真实 Tool 行为
-```
-
-所以真实 Eval 不会用 Mock LLM 假装“Agent 质量通过”。
-
-以后有稳定的测试环境后，可以单独建立：
-
-```text
-Agent Eval Pipeline
-```
-
-而不是和普通单元测试混为一谈。
-
----
-
-# 17. 从现在开始的开发闭环
-
-今后的主循环固定为：
-
-```text
-收集真实业务 Case
-        ↓
-加入 evals/cases.jsonl
-        ↓
-运行 Agent
-        ↓
-观察 Tool / Approval / Answer
-        ↓
-失败分类
-        ↓
-修改 Skill / Tool / MCP / Policy
-        ↓
-重新 Eval
-        ↓
-上线
-        ↓
-生产失败 Case 再回流到 Eval
-```
-
-这比继续扩展 Agent 底座更重要。
-
----
-
-# 18. 当前明确不做
-
-```text
-Agent Registry
-多 Agent Control Plane
-Runtime Scheduler
-Runtime Lease
-Runtime Router
-Agent Marketplace
-A2A Platform
-统一 Agent Gateway
-自研 Observability 平台
-自研 Agent Loop
-自研 Context Manager
-```
-
-只有当真实业务中出现第二、第三、更多 Agent，并且产生明确重复问题时，再从实际重复代码抽平台能力。
+| `.agents/skills/order-analysis/SKILL.md` | 订单 SOP，由宿主读取并注入新 Thread |
+| `app/core/lifespan.py` | 依赖装配、当前业务定义与操作注册、启停 |
+| `app/agents/definition.py` | Agent/MCP/Tool Policy 定义 |
+| `app/runtime/ports.py` | 应用层依赖的 Runtime Protocol |
+| `app/runtime/codex_runtime.py` | SDK 薄适配，Thread/Turn/压缩、可信 MCP Header |
+| `app/runtime/launcher.py`、`policy.py` | 实际 exec 环境白名单与本地能力限制 |
+| `app/runtime/admission.py`、`event_subscription.py` | 并发、执行期限、排空、有界 SSE 订阅 |
+| `app/services/agent_service.py`、`app/conversations/` | 会话归属与 Runtime 调用 |
+| `app/executions/`、`app/approval/` | 结构化操作授权、审批、分页与持久化 |
+| `app/security/`、`app/api/v1/`、`app/schemas/` | 服务身份、HTTP 接口与数据契约 |
+| `app/events/`、`app/observability/` | 对外事件与 OTel Trace |
+| `app/core/database.py`、`readiness.py` | PostgreSQL 期限与后台依赖探测 |
+| `migrations/`、`tests/`、`evals/` | 数据迁移、代码测试和真实 Agent 评测 |
+
+## 必需配置
+
+设置项定义在 [config.py](app/core/config.py)，`.env` 相对于进程工作目录读取；环境变量优先。应用 `.env` 不等于其他进程自动继承配置，上手指南使用显式加载方式启动多个服务。
+
+| 配置 | 作用 / 示例 |
+|---|---|
+| `CODEX_HOME` | 可写、专属、持久化的 Codex 状态目录 |
+| `AGENT_WORKSPACE` | 含订单 Skill 的内容目录；本地 Python 项目目录，镜像 `/agent` |
+| `DATABASE_URL` | `postgresql+psycopg://...`，不是 MySQL/SQLite |
+| `API_SHARED_SECRET` | 可信业务后端调用本服务的密钥，至少 32 字符 |
+| `ORDER_MCP_URL` | Java MCP Endpoint，例如 `http://127.0.0.1:8080/mcp` |
+| `ORDER_MCP_SERVICE_TOKEN` | 对应 Java `MCP_SERVICE_TOKEN`，至少 32 字符 |
+| `EXECUTION_SERVICE_SECRET` | 对应 Java 同名配置，至少 32 字符；必须不同于上面两个密钥 |
+
+模型和认证由配套 Codex CLI 及专属 CODEX_HOME 配置管理；没有 `MODEL_NAME` 这样的应用配置项。参见[上手指南](docs/GETTING_STARTED.md)。`AGENT_ID` 当前是服务标识，不会切换订单工具或 SOP。
 
 ## 运行安全与联调配置
 
-### Runtime
+| 配置 | 默认值 | 含义 |
+|---|---|---|
+| `API_PREFIX` | `/api/v1` | 修改后需同步 Java 内部授权路径和调用方 |
+| `AGENT_ID` | `order-agent` | Agent 标识 |
+| `MAX_ACTIVE_OPERATIONS` | 8 | Runtime 操作总并发，含创建/读取/压缩/Turn |
+| `OPERATION_TIMEOUT_SECONDS` | 180 秒 | 受控操作期限 |
+| `SHUTDOWN_TIMEOUT_SECONDS` | 30 秒 | 应用排空等待期限 |
+| `EXECUTION_GRANT_TTL_SECONDS` | 86400 秒 | 新执行授权有效期，过期不换新 key |
+| `DATABASE_CONNECT_SECONDS` | 3 秒 | PostgreSQL 连接超时 |
+| `DATABASE_POOL_SECONDS` | 2 秒 | 连接池等待超时 |
+| `DATABASE_STATEMENT_MS` | 5000 毫秒 | SQL 语句期限 |
+| `DATABASE_LOCK_MS` | 1000 毫秒 | 锁等待期限，不得大于 SQL 期限 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | 未配置 | 可选 OTLP HTTP Trace Endpoint |
 
-SDK 0.147 会再次合并宿主环境，因此 `config.env` 白名单本身不足以隔离凭据。当前由 `python -I <绝对路径>/launcher.py` 启动，launcher 清理环境后使用 `execve` 启动锁定版本 CLI。仅保留基础运行路径/语言、CODEX_HOME、OPENAI_API_KEY 和证书路径。自定义模型凭据变量不会自动透传。
+每个仓储池最多 5 个连接，不额外溢出扩容；会话与审批各有连接池，需要合并计算数据库容量。连接启用 TCP 保活/user timeout。SQL 异常映射为安全 503，不表示远端订单操作已回滚。
 
-订单业务通过已认证的 MCP 工具执行。`shell_tool` / `unified_exec`、JS/Code Mode、浏览器、插件、Hooks、子 Agent 等入口被明确关闭，启动和 resume 都应用策略。某些模型仍可暴露 apply_patch；READ_ONLY 沙箱和拒绝提权的 callback 阻止写入，不能把“隐藏工具”当作唯一权限边界。当前 Runtime 拒绝 WORKSPACE_WRITE/FULL_ACCESS 定义。
+后台数据库探测每轮结束后等 5 秒；失败或最后成功超过 60 秒使 ready 失败。Runtime 因执行结果不明关闭准入时，即使数据库恢复，也不能自动判为可接单。处理语义见[可靠性文档](docs/RELIABILITY.md)。
 
-订单规则仍维护在 `.agents/skills/order-analysis/SKILL.md`，由宿主在启动时读取并作为 Thread 开发指令注入，不需要模型执行 `cat`。Docker 将只读内容放在 `/agent`，应用代码由 root 持有，运行账户仅拥有 `/var/lib/codex`。该目录须专属持久卷，不能放用户上传文件或来自未知来源的配置。控制面的 MCP 凭据仍由可信 Runtime 管理，不会作为 Tool 参数提供给模型。
+### Codex 进程边界
 
-这一模式不提供任意代码执行的操作系统级隔离。后续若业务确需 Shell，必须把 Runtime 与业务服务分开进程身份/文件与网络权限，并单独做凭据读取、越权和逃逸验收，不能直接打开特性开关。
+SDK 0.147 会合并宿主环境，单靠 `config.env` 不足以隔离业务凭据。launcher 在实际 exec 前清理环境，仅保留基础运行变量、CODEX_HOME、OPENAI_API_KEY 和证书路径；自定义 provider 密钥与代理变量不会自动透传。
 
-### PostgreSQL 与 readiness
+订单 Runtime 固定 READ_ONLY，限制 Shell/JS/浏览器/插件/子 Agent 等旁路。某些模型仍可能暴露 apply_patch，文件写入还须由沙箱阻止。MCP 服务密钥仍由可信 Runtime 控制面使用；环境清理不等于密钥从整个进程/磁盘消失，也不等于提供任意代码执行的 OS 隔离。
 
-| 环境变量 | 默认值 |
-|---|---|
-| `DATABASE_CONNECT_SECONDS` | 3 秒 |
-| `DATABASE_POOL_SECONDS` | 2 秒 |
-| `DATABASE_STATEMENT_MS` | 5000 毫秒 |
-| `DATABASE_LOCK_MS` | 1000 毫秒 |
+Docker 将内容放在 `/agent`，应用代码由 root 持有，运行用户只拥有 `/var/lib/codex`。专属状态目录不应包含个人 Codex 配置、上传文件或未经审查的跨会话 memory；相关隔离尚需部署验收。
 
-每个仓储连接池固定最多 5 个连接、不额外扩容；statement/lock timeout 在连接建立时由 PostgreSQL 设置。连接同时启用 TCP 保活与 user timeout。锁等待期限不得大于 SQL 期限。超时属于失败，不得据此认定订单回滚。
+### 支持的部署拓扑
 
-每轮后台探测完成后等待 5 秒再探测；失败立即标记不可用，最后成功结果超过 60 秒也失效。`/api/v1/ready` 不执行 SQL，不因探针流量累积数据库任务。服务启动时数据库不可用直接失败；运行期恢复后可重新就绪，但 Runtime 因结果不明而关闭的准入仍需按原对账流程恢复。
+`--workers 1`，一个 Runtime，一个专属 CODEX_HOME，部署副本为 1。已有 Dockerfile 提供服务镜像，但不自动迁移数据库、不提供 OMS、也没有完成生产部署声明与灾备配置。先停止旧 Runtime 再启动新 Runtime，禁止滚动发布期间共写状态盘。
 
-### 审批 API
+## HTTP API
 
-```http
-GET /api/v1/approvals?status=PENDING&limit=50
-GET /api/v1/approvals?conversation_id=<uuid>&limit=50
-GET /api/v1/approvals?cursor=<next_cursor>&limit=50
-GET /api/v1/approvals/<approval_uuid>
+默认前缀 `/api/v1`。`{id}` 是业务 conversation ID，`{approval_id}` 是审批 ID。
+
+| 方法与路径 | 身份要求 | 返回 / 用途 |
+|---|---|---|
+| `GET /health` | 无 | 进程存活 |
+| `GET /ready` | 无 | 准入与后台数据库状态；不探测模型/OMS |
+| `POST /agent/conversations` | 服务认证 + user/tenant | `conversation_id`；无请求正文 |
+| `POST /agent/conversations/{id}/turns` | 服务认证 + 会话所有者 | 正文 `message`；返回 `answer` |
+| `POST /agent/conversations/{id}/turns/stream` | 同上 | POST SSE 流 |
+| `GET /agent/conversations/{id}` | 所有者 + `agent.operator` | 原始诊断快照，不是普通聊天历史接口 |
+| `POST /agent/conversations/{id}/compact` | 所有者 + `agent.operator` | 等待压缩完成，返回 `COMPACTION_COMPLETED` |
+| `GET /approvals` | 同租户 + `agent.approver` | `items` 和 `next_cursor` |
+| `GET /approvals/{approval_id}` | 同上 | 跨租户 404 |
+| `POST /approvals/{approval_id}/approve` | 同上 | 更新审批；无正文；不自动继续 Turn |
+| `POST /approvals/{approval_id}/reject` | 同上 | 更新审批；无正文 |
+| `POST /internal/executions/prepare` | 独立内部密钥 + 会话归属 | 仅供 Adapter；见[执行契约](docs/EXECUTION_CONTRACT.md) |
+
+发送消息的 JSON：`{"message":"查询订单 1001"}`，长度 1–32000。FastAPI `/docs` 和 `/openapi.json` 可用于开发环境查看 Schema；生产入口应限制诊断和文档访问。
+
+审批列表支持 `limit=1..200`（默认 50）、`cursor`、`conversation_id`、`status=PENDING|APPROVED|REJECTED|CONSUMED`。下一页保持原筛选条件；`next_cursor=null` 为结束。PENDING 排除已过期的新执行授权；EXPIRED 是授权判定结果，不是审批列表支持的筛选状态。分页不是跨页数据库快照。
+
+## SSE 契约
+
+```text
+event: message.delta
+data: {"type":"message.delta","conversation_id":"<uuid>","data":{"delta":"查询结果"},"created_at":"<ISO-8601>"}
+
 ```
 
-列表响应增加 `next_cursor`，为 null 表示已到最后一页。游标分页按创建时间及 ID 稳定倒序；后续页须继续携带原筛选条件。limit 为 1–200。状态支持 PENDING / APPROVED / REJECTED / CONSUMED；PENDING 不包含已过期的新授权。所有请求仍需服务认证和 `agent.approver` 角色，跨租户单条查询返回 404。分页不是跨页的事务快照，审批状态并发变更后应刷新列表。
+事件之间为空行。可能出现 `turn.started`、`message.delta`、`tool.started/completed`、`item.started/completed`、`turn.completed` 和 `error`。工具事件含名称/状态，不直接透传原始参数或结果；模型生成的回答仍需通过泄露用例与业务脱敏验收。
 
-### fixture 与完整联调
+- **成功条件**：收到 `turn.completed`，其 `data.status=completed`，没有错误。
+- `turn.completed` 也可能携带失败状态；EOF、200、部分回答不能算成功。
+- SSE 响应头发送前的 404/409/503 是真实 HTTP 状态；发送后的失败通过流内错误处理。
+- 慢消费者最多缓存 128 个事件；溢出后脱离订阅。断线不取消后台执行。
+- 当前无历史重放、断点续传和专用 SSE 心跳；代理的缓冲/空闲期限必须实测。
 
-fixture 配置及测试服务启动方法见 [Eval README](evals/README.md#测试-fixture-接入)。先运行单元、PostgreSQL 与 MCP 协议测试，再在隔离部署中配置真实模型，验证查询、申请审批、拒绝、批准后重试，以及恶意工具结果。真实 OMS 的写入与事件去重必须依照 [执行契约](docs/EXECUTION_CONTRACT.md) 验收。
+## 故障处理
 
-验证命令：
+| 现象 | 调用方处理 |
+|---|---|
+| 401 / 400 | 检查服务密钥及身份 Header，不请求模型“修复权限” |
+| 403 | 检查审批/运维角色 |
+| 404 | 检查 ID 与当前 user/tenant；不返回其他租户的信息 |
+| 409 | 同会话操作冲突，或审批不能按当前状态改变；读取具体错误 |
+| 503 + `Retry-After` | 区分容量与数据库/Runtime 故障，不对所有请求统一重试 |
+| `RUNTIME_OUTCOME_UNKNOWN` | 停止接单，核对 Thread 与 OMS 结果，再按流程恢复 |
+| `STREAM_CONSUMER_TOO_SLOW` / 连接断开 | 不推断业务失败，不自动重复写动作 |
+| `CONSUMED` | 只说明 ID 已签发，查询 OMS 确认业务结果 |
+
+## 开发验证
 
 ```bash
-pip install -e '.[dev,eval]'
+python -m pip install -e '.[dev,eval]'
 ruff check app tests evals
 pytest
 ```
 
-设置 `TEST_DATABASE_URL` 并应用全部 migrations 后，PostgreSQL 集成测试才会执行。本地未配置时显示 skipped；CI 配有 PostgreSQL 16。Java 目录运行 `mvn -B test`，包含不依赖模型账户的真实 MCP HTTP 协议测试。协议测试的授权服务与 OMS 是测试替身，不能代表真实模型推理或真实订单事务已验收。
+PostgreSQL 集成需要已迁移的专用 `TEST_DATABASE_URL`，否则跳过。CI 配置为 Python 3.11 + PostgreSQL 16；Java 21 的 MCP 测试在兄弟目录执行。真实模型评测与普通 CI 分开，命令和 fixture 说明见 [Eval README](evals/README.md)。
+
+PR #20 的历史 CI 为 Python 88 项、Java 10 项通过；新文档不会把该历史结果描述为今天新跑的模型验收。当前缺口统一见[生产验收清单](docs/PRODUCTION_READINESS.md)。

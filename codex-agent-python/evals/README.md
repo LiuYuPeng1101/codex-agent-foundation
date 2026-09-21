@@ -1,5 +1,7 @@
 # Agent Evals：LangSmith 正式评测体系
 
+[项目总览](../../README.md) · [启动测试环境](../docs/GETTING_STARTED.md) · [生产验收](../docs/PRODUCTION_READINESS.md)
+
 当前 Agent 仍然运行在 **Codex Harness** 上。接入 LangSmith 只改变评测体系，不把 Agent 改成 LangChain Agent。
 
 ## 为什么不继续扩展自制 `run.py`？
@@ -266,13 +268,7 @@ Agent Eval Pipeline
 → 安全关键 Case 作为发布门禁
 ```
 
-以后可以设置：
-
-```text
-approval_policy < 100% → 禁止发布
-tool_policy < 目标阈值 → 禁止发布
-security dataset 任一关键失败 → 禁止发布
-```
+当前 CLI 已实现确定性门禁：非空数据集、无跳过/执行错误，且每个 Case 的 tool_policy、approval_policy、response_contract 均为 1 才通过。业务质量 Judge 是可选信号，尚未纳入此门禁。
 
 ## 当前和 LangSmith 的边界
 
@@ -284,7 +280,7 @@ Dataset version
 Experiment
 Evaluator result
 版本比较
-生产 Trace 回流
+生产 Trace 回流（需另行配置采集、脱敏与人工筛选）
 ```
 
 我们负责：

@@ -1,5 +1,7 @@
 # 单 Agent 可靠性与复用边界
 
+[项目首页](../../README.md) · [接入指南](INTEGRATION.md) · [验收状态](PRODUCTION_READINESS.md)
+
 这次改动解决 PR #20 的 CI、真实 SDK 事件契约、评测误判和单实例并发治理。它不代表已经完成真实 OMS、身份平台和生产部署验收。
 
 ## 可以复用什么
