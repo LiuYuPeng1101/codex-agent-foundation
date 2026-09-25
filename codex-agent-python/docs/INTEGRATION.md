@@ -112,12 +112,12 @@ POST /api/v1/approvals/<approval_id>/reject
 |---|---|---|
 | 业务 SOP、澄清、事实来源 | `codex-agent-python/.agents/skills/order-analysis/SKILL.md` 的业务替代内容 | 业务事实回源、工具结果不作为可信指令 |
 | Agent 定义与依赖装配 | `codex-agent-python/app/core/lifespan.py`、`app/agents/definition.py`、`app/core/config.py` | 内容定义与运行时适配分离 |
-| 新工具与业务实现 | `hanress-test/.../agent/mcp/OrderMcpTools.java`、`service/OrderService.java`、`gateway/OrderGateway.java` | Tool → 应用服务 → Gateway 分层 |
+| 新工具与业务实现 | `order-mcp-adapter/.../agent/mcp/OrderMcpTools.java`、`service/OrderService.java`、`gateway/OrderGateway.java` | Tool → 应用服务 → Gateway 分层 |
 | 新高风险动作 | `codex-agent-python/app/executions/order_policy.py` 的新业务对应模块，注册到 `lifespan.py` | 严格参数验证、规范指纹、持久化审批、固定 ID |
 | 运行权限 | `codex-agent-python/app/runtime/policy.py` 与 Runtime 适配 | 不为方便打开 Shell；新隔离模式须单独设计验收 |
 | 业务质量 | `codex-agent-python/evals/cases.jsonl`、业务 Evaluator、真实测试 fixture | 失败和跳过不放行，保留复现证据 |
 
-Java 表中的缩略路径位于 `hanress-test/src/main/java/com/example/hanresstest/`。
+Java 表中的缩略路径位于 `order-mcp-adapter/src/main/java/com/example/hanresstest/`。
 
 `ExecutionService`、`AgentRuntime`、`AdmissionController`、`EventSubscription` 及 Eval Target 可以复用；当前整个项目仍是订单参考工程，装配点不是热插拔插件注册中心。LangSmith 的接入不要求把运行时换成 LangChain。
 

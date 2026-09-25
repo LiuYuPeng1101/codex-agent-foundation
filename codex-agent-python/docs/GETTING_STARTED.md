@@ -109,7 +109,7 @@ pytest
 另一个终端进入 Java 目录执行：
 
 ```bash
-cd hanress-test
+cd order-mcp-adapter
 mvn -B test
 ```
 
@@ -157,7 +157,7 @@ uvicorn evals.fixture_server:create_app --factory --host 127.0.0.1 --port 8090
 **终端 B：Java MCP Adapter**，加载配置后切目录：
 
 ```bash
-cd ../hanress-test
+cd ../order-mcp-adapter
 mvn spring-boot:run -Dspring-boot.run.arguments=--server.address=127.0.0.1
 ```
 
