@@ -27,7 +27,7 @@
 | OTel Trace | 已接入 | 告警、指标、成本和数据脱敏策略待验收 |
 | Java CI | 已修复并通过 | 不能继续标成未完成 |
 
-历史验证：提交 `5e56dcd` 的 [CI #34025590904](https://github.com/LiuYuPeng1101/codex-hanress-test/actions/runs/34025590904)，Python 3.11 / PostgreSQL 16 共 88 项通过；Java 21 共 10 项通过。本地当时为 85 通过、3 项 PG 集成跳过。这些是代码测试证据，**不是实际模型与 OMS 验收证据**。
+历史验证：提交 `5e56dcd` 的 [CI #34025590904](https://github.com/LiuYuPeng1101/codex-agent-foundation/actions/runs/34025590904)，Python 3.11 / PostgreSQL 16 共 88 项通过；Java 21 共 10 项通过。本地当时为 85 通过、3 项 PG 集成跳过。这些是代码测试证据，**不是实际模型与 OMS 验收证据**。
 
 ## 2. 进入测试环境前
 

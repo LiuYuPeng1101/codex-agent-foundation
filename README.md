@@ -4,6 +4,16 @@
 
 **当前状态：可进入隔离测试环境联调；尚未完成生产上线验收。** 它是可复用的工程基线，目前还不是发布好的通用 SDK，也不是多 Agent 管理平台。订单装配仍在代码中，换业务需要开发适配层，不能只改一个 `AGENT_ID`。
 
+## 仓库结构
+
+| 目录 | 职责 |
+|---|---|
+| `codex-agent-python/` | Agent 服务主体：HTTP/SSE、会话归属、Codex App Server 接入、审批与执行授权、评测 |
+| `order-mcp-adapter/` | Java 订单工具适配服务：暴露查询/取消工具，校验执行授权，通过 Gateway 调用已有 OMS |
+| `.github/workflows/` | Python 与 Java 的持续集成测试 |
+
+Python 服务通过 SDK 启动和控制 Codex App Server；Codex 通过 MCP 调用 Java 的订单工具。Java 在取消订单前向 Python 申请执行授权，再调用 OMS。两个目录共同构成当前订单参考实现；前端和真实 OMS 由接入方提供。Java 模块可独立部署。
+
 ## 从这里开始
 
 | 你要做什么 | 阅读入口 |
@@ -12,7 +22,7 @@
 | 接入已有公司项目、开发第二种业务 Agent | [系统接入与复用指南](codex-agent-python/docs/INTEGRATION.md)：身份、接口、审批、扩展位置 |
 | 理解意图识别、上下文、记忆及框架差异 | [Codex Harness 与 AgentScope 对比](codex-agent-python/docs/HARNESS_COMPARISON.md) |
 | 查看 Python 配置、API、排障 | [Agent Service README](codex-agent-python/README.md) |
-| 接入 Java 业务系统 | [Order MCP Adapter README](hanress-test/README.md) |
+| 接入 Java 业务系统 | [Order MCP Adapter README](order-mcp-adapter/README.md) |
 | 验证 Agent 效果与安全 | [LangSmith Eval 指南](codex-agent-python/evals/README.md) |
 | 判断能否上线 | [验收清单](codex-agent-python/docs/PRODUCTION_READINESS.md) · [可靠性边界](codex-agent-python/docs/RELIABILITY.md) · [执行幂等契约](codex-agent-python/docs/EXECUTION_CONTRACT.md) |
 
@@ -61,8 +71,8 @@ flowchart TD
 参考环境：Python 3.11+、JDK 21、Maven、PostgreSQL 16、可用的 Codex 模型认证。完整链路还需要测试 OMS；仓库提供只读测试 fixture，可先验证查订单和恶意工具返回场景。
 
 ```bash
-git clone https://github.com/LiuYuPeng1101/codex-hanress-test.git
-cd codex-hanress-test/codex-agent-python
+git clone https://github.com/LiuYuPeng1101/codex-agent-foundation.git
+cd codex-agent-foundation/codex-agent-python
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[dev,eval]'
@@ -105,5 +115,7 @@ Codex 当前官方能力与仓库锁定版本并不完全等同；AgentScope Jav
 
 ## 最近更新
 
+- **2026-09-25，目录整理**：Java 模块目录统一为 `order-mcp-adapter/`；同步 CI、启动步骤和接入文档，仓库链接更新为 `codex-agent-foundation`，新增目录职责说明。已有工作区更新后请使用新目录执行 Maven 命令。
+
 - **2026-09-21，文档整理**：明确公司复用定位；新增上手、系统接入和 Harness 对比指南；重写验收清单，纠正旧状态。未升级依赖或声称完成新的生产验收。
-- **2026-09-06，PR #20 已合并**：执行授权和固定幂等 ID、运行环境清理、数据库超时与 readiness、审批分页、fixture 验证及完整 MCP HTTP 测试。该提交 CI：Python 88 项、Java 10 项通过，见[历史验证记录](https://github.com/LiuYuPeng1101/codex-hanress-test/actions/runs/34025590904)。
+- **2026-09-06，PR #20 已合并**：执行授权和固定幂等 ID、运行环境清理、数据库超时与 readiness、审批分页、fixture 验证及完整 MCP HTTP 测试。该提交 CI：Python 88 项、Java 10 项通过，见[历史验证记录](https://github.com/LiuYuPeng1101/codex-agent-foundation/actions/runs/34025590904)。
