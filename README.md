@@ -1,6 +1,16 @@
 # 企业业务 Agent 开发底座 · Codex Harness
 
+[![CI](https://github.com/LiuYuPeng1101/codex-agent-foundation/actions/workflows/ci.yml/badge.svg)](https://github.com/LiuYuPeng1101/codex-agent-foundation/actions/workflows/ci.yml)
+
 把 Agent 接入已有的 Java / ERP / OMS / CRM 系统，复用会话、执行授权、流式接口和评测基础设施，按业务开发 Skill、Tool、Policy 与验收题库。当前以**订单 / 售后 Agent**作为参考实现。
+
+## 核心亮点
+
+- **执行授权与幂等**：模型选择工具不等于获得授权。高风险操作需注册、绑定参数并持久化审批，生成固定 execution ID；Java 侧执行前申请授权，业务系统按 execution ID 原子去重。
+- **不侵入已有系统**：Agent 以独立服务接入，业务能力通过 MCP 暴露，已有 Java 系统继续掌管账号、权限与事务。
+- **会话与并发控制**：会话归属校验（用户 + 租户）、同会话互斥、总并发上限、执行期限与优雅排空，SSE 断线后后台继续执行。
+- **可评测、可观测**：LangSmith 评测门禁 + OpenTelemetry 链路追踪，Python / Java 双模块 CI。
+- **边界透明**：维护验收清单、可靠性边界与执行幂等契约，明确区分"已实现"与"未实现"。
 
 **当前状态：可进入隔离测试环境联调；尚未完成生产上线验收。** 它是可复用的工程基线，目前还不是发布好的通用 SDK，也不是多 Agent 管理平台。订单装配仍在代码中，换业务需要开发适配层，不能只改一个 `AGENT_ID`。
 
